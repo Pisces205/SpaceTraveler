@@ -277,7 +277,11 @@ body { cursor: none; }
             <div class="mode-desc">与好友组队<br>P2P 直连 · 最多 4 人</div>
         </div>
     </div>
-    <button class="btn small" id="test-wave-btn" style="margin-top:20px">测试入口 · 第10波</button>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:20px;max-width:620px">
+        <button class="btn small" id="test-boss1-btn">测试 BOSS 1 · WAVE 10</button>
+        <button class="btn small" id="test-boss2-btn">测试 BOSS 2 · WAVE 11</button>
+        <button class="btn small" id="test-boss3-btn">测试 BOSS 3 · WAVE 12</button>
+    </div>
     <div class="controls-grid">
         <div class="control-item"><span class="control-key">WASD</span><span class="control-desc">移动</span></div>
         <div class="control-item"><span class="control-key">鼠标</span><span class="control-desc">瞄准方向</span></div>
@@ -774,6 +778,14 @@ function spawnEnemy(type, x, y) {
         sniperPhase: type === 'gunner' ? 'cooldown' : null,
         sniperTimer: type === 'gunner' ? Math.random() * t.sniperCooldown : 0,
         sniperAimAngle: 0,
+        slowFieldTimer: type === 'boss' ? 8000 : 0,
+        slowFieldActive: false, slowFieldDuration: 0,
+        rewindHistory: [], rewindThresholds: [0.7, 0.4], rewindThresholdIndex: 0,
+        portalTimer: type === 'boss' ? 12000 : 0, portals: [],
+        missileTimer: type === 'boss2' ? 6000 : 0, missileCountdown: 0, missileTargets: [],
+        turretTimer: type === 'boss2' ? 15000 : 0, turrets: [],
+        laserTimer: type === 'boss2' ? 10000 : 0, laserActive: 0, laserAngle: 0,
+        shieldTimer: type === 'boss2' ? 20000 : 0, shieldHp: 0, shieldMaxHp: 300,
     };
     enemies.push(e);
     return e;
@@ -1321,19 +1333,21 @@ function toggleMusic() {
 if (musicToggle) musicToggle.addEventListener('click', toggleMusic);
 updateMusicBtn();
 
-function startSingleGame(testWave = false) {
+function startSingleGame(testWave = 0) {
+    const testBossWave = [10, 11, 12].includes(testWave) ? testWave : 0;
+    const isTestWave = testBossWave !== 0;
     G.mode = 'single'; G.state = 'playing';
-    G.score = 0; G.wave = testWave ? 10 : 1; G.waveTimer = 0; G.spawnTimer = 0;
+    G.score = 0; G.wave = isTestWave ? testBossWave : 1; G.waveTimer = 0; G.spawnTimer = 0;
     G.snipersSpawnedThisWave = 0;
     G.enemiesPerWave = 8; G.totalKills = 0; G.combo = 0; G.comboTimer = 0;
     G.bossActive = false;
     players.length = 0;
     const me = createPlayer(0, '织者', 0, true);
-    if (testWave) {
+    if (isTestWave) {
         me.testInvulnerable = true;
         me.lifesteal = 2;
         me.homing = 1;
-        me.damage *= 1.25;
+        me.damage *= 2;
         me.fireRate *= 0.83;
     }
     me.isHost = true;
@@ -1341,6 +1355,13 @@ function startSingleGame(testWave = false) {
     G.myPlayerId = 0;
     enemies.length = 0; bullets.length = 0; enemyBullets.length = 0; lasers.length = 0;
     particles.length = 0; damageNumbers.length = 0; pickups.length = 0;
+    if (isTestWave) {
+        const bossType = { 10: 'boss', 11: 'boss2', 12: 'boss3' }[testBossWave];
+        G.enemiesPerWave = 1;
+        G.enemiesSpawnedThisWave = 1;
+        G.bossActive = true;
+        spawnEnemy(bossType, CX, testBossWave === 12 ? H * 0.25 : H * 0.22);
+    }
     document.getElementById('menu').classList.add('hidden');
     document.getElementById('multi-menu').classList.add('hidden');
     document.getElementById('gameover').classList.add('hidden');
@@ -1518,6 +1539,11 @@ function updatePlayer(p, dt) {
         }
         return;
     }
+    const slowField = G.mode === 'single'
+        ? enemies.find(enemy => enemy.behavior === 'boss' && enemy.slowFieldActive &&
+            dist(p, enemy) <= (enemy.hp <= enemy.maxHp * 0.5 ? 468 : 364))
+        : null;
+    const bossSlowFactor = slowField ? 0.6 : 1;
     let mx = 0, my = 0;
     if (p.isLocal) {
         if (input.keys['w'] || input.keys['arrowup']) my -= 1;
@@ -1527,7 +1553,7 @@ function updatePlayer(p, dt) {
     } else if (p.lastInput) { mx = p.lastInput.mx; my = p.lastInput.my; }
     if (mx || my) {
         const len = Math.hypot(mx, my); mx /= len; my /= len;
-        p.vx = lerp(p.vx, mx * p.speed, 0.2); p.vy = lerp(p.vy, my * p.speed, 0.2);
+        p.vx = lerp(p.vx, mx * p.speed * bossSlowFactor, 0.2); p.vy = lerp(p.vy, my * p.speed * bossSlowFactor, 0.2);
     } else { p.vx *= 0.85; p.vy *= 0.85; }
     p.x += p.vx * dt * 0.06; p.y += p.vy * dt * 0.06;
     p.x = clamp(p.x, p.radius, W - p.radius); p.y = clamp(p.y, p.radius, H - p.radius);
@@ -1547,14 +1573,14 @@ function updatePlayer(p, dt) {
 
     const wantShoot = p.isLocal ? input.mouse.down : (p.lastInput && p.lastInput.mouseDown);
     if (wantShoot && p.fireTimer <= 0) { fireBullet(p); p.fireTimer = p.fireRate * ((SHIPS[p.ship] || SHIPS['balance']).fireRateMul || 1); }
-    if (p.fireTimer > 0) p.fireTimer -= dt;
+    if (p.fireTimer > 0) p.fireTimer -= dt * bossSlowFactor;
 
     const wantDash = p.isLocal ? input.keys[' '] : (p.lastInput && p.lastInput.keys && p.lastInput.keys.space);
     if (wantDash && p.dashCooldown <= 0 && p.energy >= 25) {
         let dx, dy;
         if (p.isLocal) { dx = input.mouse.x - p.x; dy = input.mouse.y - p.y; }
         else { dx = p.lastInput.mouseX - p.x; dy = p.lastInput.mouseY - p.y; }
-        const len = Math.hypot(dx, dy) || 1, dashDist = 220;
+        const len = Math.hypot(dx, dy) || 1, dashDist = 220 * bossSlowFactor;
         const oldX = p.x, oldY = p.y;
         p.x += (dx / len) * dashDist; p.y += (dy / len) * dashDist;
         p.x = clamp(p.x, p.radius, W - p.radius); p.y = clamp(p.y, p.radius, H - p.radius);
@@ -1813,6 +1839,35 @@ function updateBullets(dt) {
         }
 
         // 碰撞检测
+        if (G.mode === 'single') {
+            let bulletRemoved = false;
+            for (let j = enemies.length - 1; j >= 0 && !bulletRemoved; j--) {
+                const boss = enemies[j];
+                if (boss.behavior !== 'boss2' || !boss.turrets) continue;
+                for (let k = boss.turrets.length - 1; k >= 0; k--) {
+                    const turret = boss.turrets[k];
+                    if (b.hitEnemies.has(turret) || dist(b, turret) >= b.radius + 12) continue;
+                    b.hitEnemies.add(turret);
+                    b.hitEnemy = true;
+                    turret.hp -= b.damage;
+                    spawnParticles(turret.x, turret.y, W < 720 ? 2 : 4, '#ffb000', { speed: 3, life: 240, size: 2 });
+                    spawnDamageNumber(turret.x, turret.y - 12, b.damage, '#ffb000', false);
+                    if (turret.hp <= 0) {
+                        boss.turrets.splice(k, 1);
+                        spawnParticles(turret.x, turret.y, W < 720 ? 8 : 14, '#00f0ff', { speed: 5, life: 420, size: 2 });
+                        spawnParticles(turret.x, turret.y, W < 720 ? 4 : 7, '#ffb000', { speed: 4, life: 340, size: 2 });
+                    }
+                    if (b.pierce > 0) b.pierce--;
+                    else {
+                        bullets.splice(i, 1);
+                        bulletRemoved = true;
+                    }
+                    break;
+                }
+            }
+            if (bulletRemoved) continue;
+        }
+
         if (G.mode === 'multi-client') {
             // ★ 客户端：本地子弹只做视觉效果
             if (b.isLocal) {
@@ -1909,6 +1964,15 @@ function explode(x, y, radius, damage, owner) {
 }
 
 function dealDamage(e, dmg, attacker, crit = false) {
+    if (G.mode === 'single' && e.behavior === 'boss2' && e.hp <= e.maxHp * 0.5) dmg *= 1.2;
+    if (G.mode === 'single' && e.behavior === 'boss2' && e.shieldHp > 0) {
+        e.shieldHp = Math.max(0, e.shieldHp - dmg);
+        e.hitFlash = 0.4;
+        if (attacker) e.lastHitBy = attacker.id;
+        spawnParticles(e.x, e.y, W < 720 ? 3 : 5, '#00f0ff', { speed: 3, life: 260, size: 2 });
+        spawnDamageNumber(e.x, e.y - e.radius, dmg, '#00f0ff', crit);
+        return;
+    }
     let actualDmg = dmg;
     if (e.shield > 0) {
         const sd = Math.min(e.shield, dmg);
@@ -1964,6 +2028,202 @@ function killEnemy(e, killer) {
         for (let i = 0; i < 4; i++) pickups.push({ x: e.x + rand(-60, 60), y: e.y + rand(-60, 60), type: 'energy', life: 20, radius: 8 });
         G.shake = 40; G.flashWhite = 0.6;
         players.forEach(p => { if (!p.alive) { p.alive = true; p.hp = p.maxHp; p.invincible = 2; p.x = e.x; p.y = e.y; } });
+    }
+}
+
+function updateChronovoreMechanics(e, dt) {
+    const secondPhase = e.hp <= e.maxHp * 0.5;
+    const slowFieldCooldown = secondPhase ? 6400 : 8000;
+    const portalCooldown = secondPhase ? 9600 : 12000;
+
+    e.rewindHistory.push({ x: e.x, y: e.y, time: G.time });
+    while (e.rewindHistory.length && G.time - e.rewindHistory[0].time > 3200) e.rewindHistory.shift();
+    const nextThreshold = e.rewindThresholds[e.rewindThresholdIndex];
+    if (nextThreshold !== undefined && e.hp / e.maxHp <= nextThreshold) {
+        const rewindTime = G.time - 3000;
+        const past = e.rewindHistory.find(point => point.time >= rewindTime) || e.rewindHistory[0];
+        if (past) {
+            e.x = clamp(past.x, e.radius, W - e.radius);
+            e.y = clamp(past.y, e.radius, H - e.radius);
+        }
+        e.hp = Math.min(e.maxHp, e.hp + e.maxHp * 0.15);
+        e.rewindThresholdIndex++;
+        G.flashWhite = Math.max(G.flashWhite, 0.22);
+        G.shake = Math.max(G.shake, 8);
+        spawnParticles(e.x, e.y, W < 720 ? 10 : 18, '#b347ff', { speed: 5, life: 420, size: 2 });
+        spawnParticles(e.x, e.y, W < 720 ? 8 : 12, '#00f0ff', { speed: 4, life: 360, size: 2 });
+    }
+
+    if (e.slowFieldActive) {
+        e.slowFieldDuration -= dt;
+        if (e.slowFieldDuration <= 0) {
+            e.slowFieldActive = false;
+            e.slowFieldDuration = 0;
+        }
+    } else {
+        e.slowFieldTimer -= dt;
+        if (e.slowFieldTimer <= 0) {
+            e.slowFieldActive = true;
+            e.slowFieldDuration = 3000;
+            e.slowFieldTimer = slowFieldCooldown;
+            G.flashWhite = Math.max(G.flashWhite, 0.08);
+        }
+    }
+
+    e.portalTimer -= dt;
+    if (e.portalTimer <= 0) {
+        e.portalTimer = portalCooldown;
+        const marginX = Math.min(100, W * 0.16), marginY = Math.min(100, H * 0.16);
+        for (let i = 0; i < 2; i++) {
+            e.portals.push({
+                x: rand(marginX, Math.max(marginX, W - marginX)),
+                y: rand(marginY, Math.max(marginY, H - marginY)),
+                life: 6000, fireTimer: 800, rotation: rand(0, Math.PI * 2),
+            });
+        }
+    }
+    for (let i = e.portals.length - 1; i >= 0; i--) {
+        const portal = e.portals[i];
+        portal.life -= dt;
+        portal.fireTimer -= dt;
+        portal.rotation += dt * 0.0012;
+        if (portal.life <= 0) { e.portals.splice(i, 1); continue; }
+        if (portal.fireTimer <= 0) {
+            portal.fireTimer += 800;
+            const target = players.find(player => player.alive);
+            if (target) {
+                const angle = angleTo(portal, target);
+                enemyBullets.push({
+                    x: portal.x, y: portal.y,
+                    vx: Math.cos(angle) * e.bulletSpeed * (secondPhase ? 1.3 : 1),
+                    vy: Math.sin(angle) * e.bulletSpeed * (secondPhase ? 1.3 : 1),
+                    radius: 5, damage: e.damage * 0.75, life: 4, color: '#b347ff',
+                });
+            }
+        }
+    }
+}
+
+function distanceToSegment(point, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const lengthSq = dx * dx + dy * dy;
+    const t = lengthSq ? clamp(((point.x - x1) * dx + (point.y - y1) * dy) / lengthSq, 0, 1) : 0;
+    return Math.hypot(point.x - (x1 + t * dx), point.y - (y1 + t * dy));
+}
+
+function updateMecharchMechanics(e, dt) {
+    const secondPhase = e.hp <= e.maxHp * 0.5;
+    const cooldownScale = secondPhase ? 0.8 : 1;
+
+    e.missileTimer -= dt;
+    if (e.missileTimer <= 0 && e.missileCountdown <= 0) {
+        const livingPlayers = players.filter(player => player.alive);
+        if (livingPlayers.length) {
+            e.missileTargets.length = 0;
+            for (let i = 0; i < 6; i++) {
+                const player = livingPlayers[i % livingPlayers.length];
+                const angle = i * Math.PI * 2 / 6 + Math.floor(i / livingPlayers.length) * 0.35;
+                const spread = livingPlayers.length > 1 ? 20 : 34 + (i % 3) * 15;
+                e.missileTargets.push({
+                    x: clamp(player.x + Math.cos(angle) * spread, 30, W - 30),
+                    y: clamp(player.y + Math.sin(angle) * spread, 30, H - 30),
+                });
+            }
+            e.missileCountdown = 2000;
+            e.missileTimer = 6000 * cooldownScale;
+            G.shake = Math.max(G.shake, 2);
+        } else {
+            e.missileTimer = 500;
+        }
+    }
+    if (e.missileCountdown > 0) {
+        e.missileCountdown -= dt;
+        if (e.missileCountdown <= 0) {
+            const blastRadius = 64;
+            e.missileTargets.forEach(target => {
+                spawnParticles(target.x, target.y, W < 720 ? 6 : 10, '#ffb000', { speed: 5, life: 420, size: 2 });
+                spawnParticles(target.x, target.y, W < 720 ? 4 : 7, '#ff3355', { speed: 4, life: 360, size: 2 });
+                particles.push({
+                    x: target.x, y: target.y, vx: 0, vy: 0, life: 360, maxLife: 360,
+                    color: '#ffb000', size: 1, drag: 1, glow: true, isRing: true,
+                    ringR: 8, ringMax: blastRadius,
+                });
+                players.forEach(player => {
+                    if (!player.alive || player.invincible > 0 || dist(target, player) > blastRadius) return;
+                    applyPlayerDamage(player, e.damage * 1.1);
+                    player.invincible = 0.45;
+                    if (player.isLocal) { G.flashRed = Math.max(G.flashRed, 0.38); G.shake = Math.max(G.shake, 8); }
+                });
+            });
+            e.missileTargets.length = 0;
+        }
+    }
+
+    e.turretTimer -= dt;
+    if (e.turretTimer <= 0) {
+        e.turretTimer = 15000 * cooldownScale;
+        const occupiedCorners = new Set(e.turrets.map(turret => turret.corner));
+        const corners = [0, 1, 2, 3].filter(corner => !occupiedCorners.has(corner));
+        for (let i = 0; i < 2 && corners.length && e.turrets.length < 4; i++) {
+            const cornerIndex = randInt(0, corners.length - 1);
+            const corner = corners.splice(cornerIndex, 1)[0];
+            const margin = Math.min(90, W * 0.14, H * 0.14);
+            e.turrets.push({
+                corner,
+                x: corner % 2 === 0 ? margin : W - margin,
+                y: corner < 2 ? margin : H - margin,
+                hp: 80, maxHp: 80, fireTimer: rand(200, 900), rotation: 0,
+            });
+        }
+    }
+    for (let i = e.turrets.length - 1; i >= 0; i--) {
+        const turret = e.turrets[i];
+        turret.rotation += dt * 0.0006;
+        turret.fireTimer -= dt;
+        if (turret.fireTimer > 0) continue;
+        turret.fireTimer += secondPhase ? 800 : 1000;
+        const target = players.find(player => player.alive);
+        if (!target) continue;
+        const angle = angleTo(turret, target);
+        enemyBullets.push({
+            x: turret.x, y: turret.y, vx: Math.cos(angle) * 4.6, vy: Math.sin(angle) * 4.6,
+            radius: 4, damage: e.damage * 0.65, life: 4, color: '#ffb000',
+        });
+    }
+
+    e.laserTimer -= dt;
+    if (e.laserActive > 0) {
+        e.laserActive = Math.max(0, e.laserActive - dt);
+        e.laserAngle += dt * (secondPhase ? 0.003 : 0.0023);
+        const reach = Math.hypot(W, H);
+        for (const player of players) {
+            if (!player.alive || player.invincible > 0) continue;
+            for (let beam = 0; beam < 4; beam++) {
+                const angle = e.laserAngle + beam * Math.PI / 2;
+                const endX = e.x + Math.cos(angle) * reach, endY = e.y + Math.sin(angle) * reach;
+                if (distanceToSegment(player, e.x, e.y, endX, endY) <= player.radius + 9) {
+                    applyPlayerDamage(player, e.damage * 0.28);
+                    player.invincible = 0.3;
+                    if (player.isLocal) { G.flashRed = Math.max(G.flashRed, 0.22); G.shake = Math.max(G.shake, 4); }
+                    break;
+                }
+            }
+        }
+    } else if (e.laserTimer <= 0) {
+        e.laserTimer = 10000 * cooldownScale;
+        e.laserActive = 3000;
+        e.laserAngle = angleTo(e, players.find(player => player.alive) || e);
+        G.flashWhite = Math.max(G.flashWhite, 0.12);
+    }
+
+    if (e.shieldHp <= 0) {
+        e.shieldTimer -= dt;
+        if (e.shieldTimer <= 0) {
+            e.shieldHp = e.shieldMaxHp;
+            e.shieldTimer = 20000 * cooldownScale;
+            G.flashWhite = Math.max(G.flashWhite, 0.1);
+            spawnParticles(e.x, e.y, W < 720 ? 8 : 14, '#00f0ff', { speed: 4, life: 440, size: 2 });
+        }
     }
 }
 
@@ -2042,39 +2302,46 @@ function updateEnemies(dt) {
                 continue;
             }
         } else if (e.behavior === 'boss') {
+            const secondPhase = e.hp <= e.maxHp * 0.5;
+            if (G.mode === 'single') updateChronovoreMechanics(e, dt);
             const ty = 150, tx = CX;
             e.vx = lerp(e.vx, (tx - e.x) * 0.005, 0.05);
             e.vy = lerp(e.vy, (ty - e.y) * 0.005, 0.05);
             e.fireTimer -= dt;
             if (e.fireTimer <= 0) {
-                e.fireTimer = e.fireRate;
+                e.fireTimer = e.fireRate * (G.mode === 'single' && secondPhase ? 0.8 : 1);
                 const count = 9;
                 for (let j = 0; j < count; j++) {
                     const ba = a - 0.8 + (1.6 / (count - 1)) * j;
-                    enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(ba) * e.bulletSpeed, vy: Math.sin(ba) * e.bulletSpeed, radius: 6, damage: e.damage, life: 4, color: e.color });
+                    const speed = e.bulletSpeed * (G.mode === 'single' && secondPhase ? 1.3 : 1);
+                    enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(ba) * speed, vy: Math.sin(ba) * speed, radius: 6, damage: e.damage, life: 4, color: e.color });
                 }
                 if (Math.random() < 0.3) {
                     for (let j = 0; j < 12; j++) {
                         const ba = (j / 12) * Math.PI * 2 + G.time * 0.001;
-                        enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(ba) * e.bulletSpeed * 0.7, vy: Math.sin(ba) * e.bulletSpeed * 0.7, radius: 5, damage: e.damage * 0.7, life: 4, color: '#b347ff' });
+                        const speed = e.bulletSpeed * 0.7 * (G.mode === 'single' && secondPhase ? 1.3 : 1);
+                        enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(ba) * speed, vy: Math.sin(ba) * speed, radius: 5, damage: e.damage * 0.7, life: 4, color: '#b347ff' });
                     }
                 }
             }
         } else if (e.behavior === 'boss2') {
+            const secondPhase = e.hp <= e.maxHp * 0.5;
+            if (G.mode === 'single') updateMecharchMechanics(e, dt);
             // 缓慢向玩家靠近 + 密集弹幕
             e.vx = lerp(e.vx, Math.cos(a) * e.speed, 0.04);
             e.vy = lerp(e.vy, Math.sin(a) * e.speed, 0.04);
             e.fireTimer -= dt;
             if (e.fireTimer <= 0) {
-                e.fireTimer = e.fireRate;
-                const count = 11;
+                e.fireTimer = e.fireRate * (G.mode === 'single' && secondPhase ? 0.8 : 1);
+                const count = G.mode === 'single' && secondPhase ? 17 : 11;
                 for (let j = 0; j < count; j++) {
                     const ba = a - 1.0 + (2.0 / (count - 1)) * j;
                     enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(ba) * e.bulletSpeed, vy: Math.sin(ba) * e.bulletSpeed, radius: 6, damage: e.damage, life: 4, color: e.color });
                 }
-                if (Math.random() < 0.35) {
-                    for (let j = 0; j < 14; j++) {
-                        const ba = (j / 14) * Math.PI * 2 + G.time * 0.001;
+                if (Math.random() < (G.mode === 'single' && secondPhase ? 0.525 : 0.35)) {
+                    const ringCount = G.mode === 'single' && secondPhase ? 21 : 14;
+                    for (let j = 0; j < ringCount; j++) {
+                        const ba = (j / ringCount) * Math.PI * 2 + G.time * 0.001;
                         enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(ba) * e.bulletSpeed * 0.7, vy: Math.sin(ba) * e.bulletSpeed * 0.7, radius: 5, damage: e.damage * 0.7, life: 4, color: '#ff2e88' });
                     }
                 }
@@ -2612,50 +2879,379 @@ function renderRiftForPlayer(p) {
     ctx.fillStyle = '#b347ff'; ctx.beginPath(); ctx.arc(r.x, r.y, 4, 0, Math.PI * 2); ctx.fill();
 }
 
-function renderBoss3Body(e) {
-    const secondPhase = e.boss3SecondPhase;
+function renderBossAura(e, color, radius) {
+    const compact = W < 720;
+    const pulse = 0.5 + Math.sin(G.time * 0.006 + e.rotation) * 0.18;
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = compact ? 1.5 : 2;
+    ctx.setLineDash([14, 9]);
+    ctx.lineDashOffset = -G.time * 0.025;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius + 13 + pulse * 5, e.rotation * -0.35, e.rotation * -0.35 + Math.PI * 1.75);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.28 + pulse * 0.35;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius + 23 + pulse * 8, e.rotation * 0.2, e.rotation * 0.2 + Math.PI * 0.72);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function renderChronovoreBody(e) {
+    const compact = W < 720;
     const rotation = e.rotation;
-    const alarm = 0.55 + Math.sin(G.time * (secondPhase ? 0.035 : 0.018)) * 0.35;
+    const charge = e.fireRate ? clamp(1 - e.fireTimer / e.fireRate, 0, 1) : 0;
+    const pulse = 0.78 + Math.sin(G.time * 0.008) * 0.16;
+    const horizon = compact ? 82 : 98;
+    renderBossAura(e, '#00f0ff', horizon);
     ctx.save();
     ctx.translate(e.x, e.y);
 
+    const horizonGlow = ctx.createRadialGradient(0, 0, horizon * 0.62, 0, 0, horizon * 1.12);
+    horizonGlow.addColorStop(0, 'rgba(0,240,255,0)');
+    horizonGlow.addColorStop(0.36, 'rgba(0,240,255,0.08)');
+    horizonGlow.addColorStop(0.58, `rgba(0,240,255,${0.22 * pulse})`);
+    horizonGlow.addColorStop(0.72, `rgba(140,255,255,${0.35 * pulse})`);
+    horizonGlow.addColorStop(0.82, 'rgba(0,240,255,0.16)');
+    horizonGlow.addColorStop(1, 'rgba(0,240,255,0)');
+    ctx.fillStyle = horizonGlow;
+    ctx.fillRect(-horizon * 1.15, -horizon * 1.15, horizon * 2.3, horizon * 2.3);
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(0,240,255,${0.48 + pulse * 0.34})`;
+    ctx.lineWidth = compact ? 2 : 3;
+    ctx.beginPath(); ctx.arc(0, 0, horizon * 0.83, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(100,255,255,0.56)';
+    ctx.lineWidth = compact ? 1 : 1.5;
+    ctx.beginPath(); ctx.arc(0, 0, horizon * 0.9, rotation * -0.18, rotation * -0.18 + Math.PI * 1.7); ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,240,255,0.36)';
+    ctx.setLineDash([compact ? 3 : 5, compact ? 5 : 8]);
+    ctx.lineDashOffset = -rotation * 12;
+    ctx.beginPath(); ctx.arc(0, 0, horizon * 0.69, rotation * 0.12, rotation * 0.12 + Math.PI * 1.84); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,46,136,0.46)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(0, 0, horizon * 0.61, rotation * 0.08, rotation * 0.08 + Math.PI * 1.62); ctx.stroke();
+
+    for (let i = 0; i < 8; i++) {
+        const angle = rotation * (i % 2 ? -0.16 : 0.16) + i * Math.PI / 4;
+        ctx.save(); ctx.rotate(angle);
+        ctx.strokeStyle = i % 2 ? 'rgba(0,240,255,0.74)' : 'rgba(255,255,255,0.68)';
+        ctx.lineWidth = compact ? 1 : 1.5;
+        ctx.beginPath();
+        ctx.moveTo(horizon * 0.78, 0);
+        ctx.lineTo(horizon * 1.04, 0);
+        ctx.lineTo(horizon * (0.97 + (i % 3) * 0.025), -3);
+        ctx.moveTo(horizon * 1.01, 1);
+        ctx.lineTo(horizon * 1.09, 3);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Small clockwork teeth orbit inside the event horizon.
+    for (let i = 0; i < 8; i++) {
+        const a = rotation * (i % 2 ? -0.12 : 0.12) + i * Math.PI / 4 + Math.PI / 8;
+        const gearRadius = horizon * 0.56;
+        const gx = Math.cos(a) * gearRadius, gy = Math.sin(a) * gearRadius;
+        const gr = compact ? 4 : 5;
+        ctx.save(); ctx.translate(gx, gy); ctx.rotate(-a + rotation * 0.35);
+        ctx.fillStyle = '#281522'; ctx.strokeStyle = i % 2 ? '#ffb000' : '#b347ff';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        for (let tooth = 0; tooth < 16; tooth++) {
+            const ta = tooth * Math.PI / 8;
+            const tr = tooth % 2 ? gr * 0.76 : gr;
+            const tx = Math.cos(ta) * tr, ty = Math.sin(ta) * tr;
+            if (!tooth) ctx.moveTo(tx, ty); else ctx.lineTo(tx, ty);
+        }
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#ffb000'; ctx.beginPath(); ctx.arc(0, 0, gr * 0.27, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+
+    // Six flowing filaments connect the star to the outer energy ring.
+    for (let i = 0; i < 6; i++) {
+        const angle = rotation * (i % 2 ? -0.12 : 0.12) + i * Math.PI / 3;
+        ctx.save(); ctx.rotate(angle);
+        const reach = horizon * (1.02 + (i % 2) * 0.07);
+        ctx.globalAlpha = 0.48 + pulse * 0.24;
+        ctx.strokeStyle = '#ff2e88'; ctx.lineWidth = compact ? 3 : 4;
+        ctx.beginPath(); ctx.moveTo(28, 0);
+        ctx.bezierCurveTo(48, -9, 57, 10, 71, 3);
+        ctx.bezierCurveTo(83, -4, 88, -14, reach, -7); ctx.stroke();
+        ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = compact ? 1.3 : 1.7;
+        ctx.beginPath(); ctx.moveTo(31, 2);
+        ctx.bezierCurveTo(49, 10, 60, -8, 72, 0);
+        ctx.bezierCurveTo(84, 9, 91, 13, reach * 0.98, 4); ctx.stroke();
+        ctx.globalAlpha = 0.72;
+        ctx.fillStyle = '#ff86d0';
+        ctx.beginPath(); ctx.arc(reach, -7, compact ? 1.5 : 2, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.rotate(-rotation * 0.18);
+    const starGlow = ctx.createRadialGradient(0, 0, 5, 0, 0, 65);
+    starGlow.addColorStop(0, 'rgba(255,46,136,0.68)');
+    starGlow.addColorStop(0.56, 'rgba(255,46,136,0.23)');
+    starGlow.addColorStop(1, 'rgba(179,71,255,0)');
+    ctx.fillStyle = starGlow;
+    ctx.beginPath(); ctx.arc(0, 0, 65, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = '#190b23';
+    ctx.strokeStyle = '#ff2e88'; ctx.lineWidth = compact ? 3 : 4;
+    ctx.beginPath();
+    for (let i = 0; i < 16; i++) {
+        const a = i * Math.PI / 8 - Math.PI / 2;
+        const r = i % 2 ? 35 : 59;
+        if (!i) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+        else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(255,160,225,0.86)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4 - Math.PI / 2;
+        const x = Math.cos(a) * 57, y = Math.sin(a) * 57;
+        if (!i) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath(); ctx.stroke();
+
+    const disk = ctx.createRadialGradient(0, 0, 2, 0, 0, 31);
+    disk.addColorStop(0, '#05030d'); disk.addColorStop(0.38, '#100720');
+    disk.addColorStop(0.68, '#3b1454'); disk.addColorStop(0.84, '#ff2e88');
+    disk.addColorStop(1, 'rgba(255,46,136,0)');
+    ctx.fillStyle = disk; ctx.beginPath(); ctx.arc(0, 0, 32, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(179,71,255,0.92)'; ctx.lineWidth = compact ? 1.5 : 2;
+    ctx.beginPath(); ctx.arc(0, 0, 21, rotation * 0.6, rotation * 0.6 + Math.PI * 1.65); ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,240,255,0.78)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(0, 0, 25, -rotation * 0.45, -rotation * 0.45 + Math.PI * 1.3); ctx.stroke();
+    ctx.fillStyle = '#03020a'; ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+    const singularity = ctx.createRadialGradient(-2, -2, 1, 0, 0, 12);
+    singularity.addColorStop(0, '#020109'); singularity.addColorStop(0.68, '#090316');
+    singularity.addColorStop(0.88, '#b347ff'); singularity.addColorStop(1, 'rgba(179,71,255,0)');
+    ctx.fillStyle = singularity; ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+
+    ctx.strokeStyle = `rgba(255,176,0,${0.38 + charge * 0.62})`;
+    ctx.lineWidth = compact ? 1.5 + charge : 2 + charge * 2;
+    ctx.beginPath(); ctx.arc(0, 0, 40 + charge * 7, G.time * 0.006, G.time * 0.006 + Math.PI * (1.15 + charge * 0.85)); ctx.stroke();
+    if (charge > 0.72) {
+        ctx.strokeStyle = `rgba(255,255,255,${(charge - 0.72) * 1.7})`;
+        ctx.lineWidth = compact ? 2 : 3;
+        ctx.beginPath(); ctx.arc(0, 0, 49 + charge * 12, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function renderMecharchBody(e) {
+    const compact = W < 720;
+    const r = e.radius;
+    const charge = e.fireRate ? clamp(1 - e.fireTimer / e.fireRate, 0, 1) : 0;
+    renderBossAura(e, '#b347ff', r);
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    ctx.rotate(e.rotation * 0.08);
+
+    const drawOctagon = (radius, phase = Math.PI / 8) => {
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {
+            const a = phase + i * Math.PI / 4;
+            const x = Math.cos(a) * radius, y = Math.sin(a) * radius;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+    };
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(0,240,255,0.5)'; ctx.lineWidth = compact ? 1 : 1.5;
+    ctx.setLineDash([5, 5]); ctx.lineDashOffset = -G.time * 0.015;
+    drawOctagon(r * 0.99); ctx.stroke(); ctx.setLineDash([]);
+    ctx.globalCompositeOperation = 'source-over';
+
+    drawOctagon(r * 0.91);
+    ctx.fillStyle = e.hitFlash > 0.1 ? '#ffffff' : '#111327';
+    ctx.strokeStyle = e.hitFlash > 0.1 ? '#ffffff' : '#00f0ff';
+    ctx.lineWidth = compact ? 2 : 3;
+    ctx.fill(); ctx.stroke();
+    drawOctagon(r * 0.84);
+    ctx.strokeStyle = '#b347ff'; ctx.lineWidth = compact ? 1 : 2; ctx.stroke();
+
+    // Eight glass armor facets sit between the four weapon bays and four turrets.
+    for (let i = 0; i < 8; i++) {
+        const a = Math.PI / 8 + i * Math.PI / 4;
+        ctx.save(); ctx.rotate(a);
+        ctx.beginPath();
+        ctx.moveTo(r * 0.43, -r * 0.105);
+        ctx.lineTo(r * 0.53, -r * 0.17);
+        ctx.lineTo(r * 0.78, -r * 0.105);
+        ctx.lineTo(r * 0.83, 0);
+        ctx.lineTo(r * 0.78, r * 0.105);
+        ctx.lineTo(r * 0.53, r * 0.17);
+        ctx.lineTo(r * 0.43, r * 0.105);
+        ctx.closePath();
+        ctx.fillStyle = '#123044'; ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1.4;
+        ctx.fill(); ctx.stroke();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.42;
+        ctx.fillStyle = '#00f0ff';
+        ctx.beginPath();
+        ctx.moveTo(r * 0.49, -r * 0.1); ctx.lineTo(r * 0.73, -r * 0.075);
+        ctx.lineTo(r * 0.79, 0); ctx.lineTo(r * 0.55, r * 0.035);
+        ctx.closePath(); ctx.fill();
+        ctx.globalAlpha = 0.75;
+        ctx.strokeStyle = 'rgba(180,250,255,0.75)'; ctx.lineWidth = 0.7;
+        ctx.beginPath();
+        ctx.moveTo(r * 0.5, -r * 0.07); ctx.lineTo(r * 0.76, r * 0.07);
+        ctx.moveTo(r * 0.56, r * 0.02); ctx.lineTo(r * 0.72, -r * 0.08);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Four orthogonal missile bays form the distinctive cross-shaped silhouette.
+    for (let i = 0; i < 4; i++) {
+        ctx.save(); ctx.rotate(i * Math.PI / 2);
+        ctx.beginPath();
+        ctx.moveTo(r * 0.34, -r * 0.2); ctx.lineTo(r * 0.82, -r * 0.2);
+        ctx.lineTo(r * 0.96, -r * 0.13); ctx.lineTo(r * 0.99, 0);
+        ctx.lineTo(r * 0.96, r * 0.13); ctx.lineTo(r * 0.82, r * 0.2);
+        ctx.lineTo(r * 0.34, r * 0.2); ctx.closePath();
+        ctx.fillStyle = '#17152a'; ctx.strokeStyle = '#b347ff'; ctx.lineWidth = 2;
+        ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(r * 0.39, -r * 0.15); ctx.lineTo(r * 0.77, -r * 0.15);
+        ctx.moveTo(r * 0.39, r * 0.15); ctx.lineTo(r * 0.77, r * 0.15); ctx.stroke();
+        for (const side of [-1, 1]) {
+            const missileX = r * 0.69, missileY = side * r * 0.095;
+            ctx.fillStyle = '#ffb000';
+            ctx.beginPath();
+            ctx.moveTo(missileX + r * 0.105, missileY);
+            ctx.lineTo(missileX + r * 0.045, missileY - r * 0.028);
+            ctx.lineTo(missileX - r * 0.095, missileY - r * 0.02);
+            ctx.lineTo(missileX - r * 0.12, missileY);
+            ctx.lineTo(missileX - r * 0.095, missileY + r * 0.02);
+            ctx.lineTo(missileX + r * 0.045, missileY + r * 0.028);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = '#fff1a6';
+            ctx.fillRect(missileX - r * 0.04, missileY - r * 0.012, r * 0.095, r * 0.024);
+        }
+        ctx.fillStyle = '#ffb000';
+        ctx.beginPath(); ctx.arc(r * 0.95, 0, r * 0.035, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+
+    // Diagonal turrets use a layered violet mount and a bright amber muzzle.
+    for (let i = 0; i < 4; i++) {
+        const a = Math.PI / 4 + i * Math.PI / 2;
+        ctx.save(); ctx.rotate(a);
+        ctx.translate(r * 0.69, 0);
+        ctx.fillStyle = '#111327'; ctx.strokeStyle = '#b347ff'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.17, -r * 0.16); ctx.lineTo(-r * 0.04, -r * 0.23);
+        ctx.lineTo(r * 0.16, -r * 0.15); ctx.lineTo(r * 0.22, 0);
+        ctx.lineTo(r * 0.16, r * 0.15); ctx.lineTo(-r * 0.04, r * 0.23);
+        ctx.lineTo(-r * 0.17, r * 0.16); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(0, 0, r * 0.14, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = '#2b2146'; ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(0, 0, r * 0.095, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        for (const side of [-1, 1]) {
+            ctx.strokeStyle = '#b347ff'; ctx.lineWidth = r * 0.07;
+            ctx.beginPath(); ctx.moveTo(r * 0.03, side * r * 0.07); ctx.lineTo(r * 0.2, side * r * 0.14); ctx.stroke();
+            ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(r * 0.04, side * r * 0.07); ctx.lineTo(r * 0.2, side * r * 0.14); ctx.stroke();
+        }
+        ctx.globalCompositeOperation = 'lighter';
+        const muzzle = ctx.createRadialGradient(r * 0.2, 0, 1, r * 0.2, 0, r * (0.07 + charge * 0.04));
+        muzzle.addColorStop(0, '#ffffff'); muzzle.addColorStop(0.35, '#ffb000'); muzzle.addColorStop(1, 'rgba(255,176,0,0)');
+        ctx.fillStyle = muzzle;
+        ctx.beginPath(); ctx.arc(r * 0.2, 0, r * (0.07 + charge * 0.04), 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+
+    // Concentric reactor rings, radial ticks and a golden central reactor.
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = '#0a1021'; ctx.strokeStyle = '#b347ff'; ctx.lineWidth = compact ? 3 : 4;
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.43, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = compact ? 1.5 : 2;
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.37, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,46,136,0.85)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.31, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,240,255,0.68)'; ctx.lineWidth = 1;
+    for (let i = 0; i < 32; i++) {
+        const a = i * Math.PI / 16 + G.time * 0.00035;
+        const inner = r * (i % 4 === 0 ? 0.28 : 0.32);
+        const outer = r * 0.35;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
+        ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer);
+        ctx.stroke();
+    }
+    const reactor = ctx.createRadialGradient(-r * 0.04, -r * 0.04, 1, 0, 0, r * (0.25 + charge * 0.035));
+    reactor.addColorStop(0, '#ffffff'); reactor.addColorStop(0.18, '#fff5b0');
+    reactor.addColorStop(0.46, '#ffb000'); reactor.addColorStop(0.78, 'rgba(255,176,0,0.35)');
+    reactor.addColorStop(1, 'rgba(255,176,0,0)');
+    ctx.fillStyle = reactor;
+    ctx.beginPath(); ctx.arc(0, 0, r * (0.25 + charge * 0.035), 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255,176,0,${0.55 + charge * 0.45})`;
+    ctx.lineWidth = compact ? 1.5 : 2;
+    ctx.beginPath(); ctx.arc(0, 0, r * (0.26 + charge * 0.04), G.time * 0.003, G.time * 0.003 + Math.PI * (1.5 + charge * 0.5)); ctx.stroke();
+    if (charge > 0.72) {
+        ctx.strokeStyle = `rgba(255,255,255,${(charge - 0.72) * 1.7})`;
+        ctx.lineWidth = compact ? 2 : 3;
+        ctx.beginPath(); ctx.arc(0, 0, r * (0.48 + charge * 0.08), 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function renderBoss3Body(e) {
+    const secondPhase = e.boss3SecondPhase;
+    const compact = W < 720;
+    const rotation = e.rotation;
+    const alarm = 0.55 + Math.sin(G.time * (secondPhase ? 0.035 : 0.018)) * 0.35;
+    renderBossAura(e, secondPhase ? '#ff3355' : '#00f0ff', 80);
+    ctx.save();
+    ctx.translate(e.x, e.y);
     ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = `rgba(0, 240, 255, ${secondPhase ? 0.85 : 0.6})`;
-    ctx.lineWidth = secondPhase ? 3 : 2;
+    ctx.lineWidth = compact ? 1.5 : 2;
     for (let i = 0; i < 3; i++) {
         const start = rotation * (i % 2 ? -1 : 1) + i * 2.1;
         ctx.beginPath();
         ctx.arc(0, 0, 91 + i * 3, start, start + 0.72 + Math.sin(G.time * 0.012 + i) * 0.18);
         ctx.stroke();
     }
-    ctx.strokeStyle = `rgba(255, 46, 100, ${alarm})`;
-    ctx.lineWidth = secondPhase ? 5 : 3;
+    ctx.strokeStyle = `rgba(255, 51, 85, ${alarm})`;
+    ctx.lineWidth = secondPhase ? 4 : 2;
     ctx.setLineDash([10, 12]);
+    ctx.lineDashOffset = -rotation * 12;
     ctx.beginPath(); ctx.arc(0, 0, 80, -rotation * 0.6, Math.PI * 2 - rotation * 0.6); ctx.stroke();
     ctx.setLineDash([]);
-
     for (let i = 0; i < 6; i++) {
         const a = rotation + i * Math.PI / 3;
         const x = Math.cos(a), y = Math.sin(a);
         ctx.save(); ctx.rotate(a);
         ctx.fillStyle = '#171327';
-        ctx.strokeStyle = secondPhase ? `rgba(255, 46, 100, ${alarm})` : 'rgba(0, 240, 255, 0.8)';
+        ctx.strokeStyle = secondPhase ? `rgba(255, 51, 85, ${alarm})` : 'rgba(0, 240, 255, 0.8)';
         ctx.lineWidth = secondPhase ? 3 : 2;
         ctx.beginPath();
         ctx.moveTo(49, -13); ctx.lineTo(69, -17); ctx.lineTo(86, -8);
         ctx.lineTo(86, 8); ctx.lineTo(69, 17); ctx.lineTo(49, 13);
         ctx.closePath(); ctx.fill(); ctx.stroke();
         ctx.restore();
-
         ctx.fillStyle = i % 2 ? '#00f0ff' : '#ff3355';
-        ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = secondPhase ? 22 : 13;
+        if (!compact) { ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = secondPhase ? 14 : 8; }
         ctx.beginPath(); ctx.arc(x * 75, y * 75, i % 2 ? 5 : 6, 0, Math.PI * 2); ctx.fill();
         ctx.shadowBlur = 0;
     }
-
     ctx.rotate(rotation * 0.35);
     ctx.fillStyle = '#100b1b';
-    ctx.strokeStyle = secondPhase ? `rgba(255, 46, 100, ${alarm})` : '#b347ff';
+    ctx.strokeStyle = secondPhase ? `rgba(255, 51, 85, ${alarm})` : '#b347ff';
     ctx.lineWidth = secondPhase ? 5 : 4;
     ctx.beginPath();
     for (let i = 0; i < 6; i++) {
@@ -2664,7 +3260,6 @@ function renderBoss3Body(e) {
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.closePath(); ctx.fill(); ctx.stroke();
-
     const core = ctx.createRadialGradient(-5, -7, 2, 0, 0, secondPhase ? 34 : 27);
     core.addColorStop(0, '#fff0ff');
     core.addColorStop(0.25, secondPhase ? '#ff3355' : '#ff2e88');
@@ -2687,49 +3282,471 @@ function renderBoss3Body(e) {
         for (let y = -55 + scanY; y <= 55; y += 10) {
             ctx.beginPath(); ctx.moveTo(-58, y); ctx.lineTo(58, y); ctx.stroke();
         }
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.2 + Math.sin(G.time * 0.07) * 0.15;
+        ctx.fillStyle = '#ff3355';
+        const glitchY = ((G.time * 0.13) % 88) - 44;
+        ctx.fillRect(-48, glitchY, 96, 3);
         ctx.restore();
     }
+    ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = `rgba(255, 51, 85, ${alarm})`;
     ctx.lineWidth = secondPhase ? 3 : 2;
     ctx.beginPath(); ctx.arc(0, 0, secondPhase ? 39 : 33, G.time * 0.004, G.time * 0.004 + Math.PI * 1.5); ctx.stroke();
     ctx.restore();
 }
 
+const bossHealthTrail = new WeakMap();
+
+function renderBossPhaseUI(boss, x, y, width, height, secondPhase) {
+    const color = secondPhase ? '#ff3355' : boss.type === 'boss' ? '#ff2e88' : boss.type === 'boss2' ? '#b347ff' : '#00f0ff';
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = secondPhase ? 'rgba(255,51,85,0.9)' : 'rgba(0,240,255,0.62)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i++) {
+        const tickX = x + width * i / 4;
+        ctx.beginPath(); ctx.moveTo(tickX, y + height - 3); ctx.lineTo(tickX, y + height + 4); ctx.stroke();
+    }
+    if (boss.type === 'boss3') {
+        const phaseX = x + width * 0.5;
+        ctx.strokeStyle = secondPhase ? '#ff3355' : '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(phaseX, y - 3); ctx.lineTo(phaseX, y + height + 5); ctx.stroke();
+        ctx.fillStyle = secondPhase ? '#ff3355' : '#ffffff';
+        ctx.beginPath(); ctx.arc(phaseX, y - 3, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+}
+
+function renderBossHealthBar(boss) {
+    const compact = W < 560;
+    const barWidth = Math.max(180, Math.min(compact ? W - 34 : W < 900 ? W - 444 : 480, W - 34));
+    const barHeight = compact ? 17 : 20;
+    const barX = (W - barWidth) / 2;
+    const barY = W < 720 ? 154 : 42;
+    const hpRatio = clamp(boss.hp / boss.maxHp, 0, 1);
+    const secondPhase = boss.type === 'boss3'
+        ? boss.boss3SecondPhase
+        : G.mode === 'single' && (boss.type === 'boss' || boss.type === 'boss2') && boss.hp <= boss.maxHp * 0.5;
+    const dangerPulse = hpRatio < 0.2 ? 0.5 + Math.sin(G.time * 0.018) * 0.35 : 1;
+    const bossColor = secondPhase ? '#ff3355' : boss.type === 'boss' ? '#ff2e88' : boss.type === 'boss2' ? '#b347ff' : '#00f0ff';
+    const state = bossHealthTrail.get(boss);
+    const dt = state ? clamp((G.time - state.time) / 1000, 0, 0.05) : 0;
+    const delayedRatio = !state || hpRatio > state.delayed ? hpRatio : Math.max(hpRatio, state.delayed - dt * 0.42);
+    bossHealthTrail.set(boss, { delayed: delayedRatio, time: G.time });
+    const bossName = boss.type === 'boss3' ? '深空行者 · ABYSSAL WRAITH' : boss.type === 'boss2' ? '机械先驱 · MECHARCH' : '时空吞噬者 · CHRONOVORE';
+    const cut = compact ? 8 : 11;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath();
+    ctx.moveTo(barX + cut, barY); ctx.lineTo(barX + barWidth - cut, barY);
+    ctx.lineTo(barX + barWidth, barY + barHeight / 2); ctx.lineTo(barX + barWidth - cut, barY + barHeight);
+    ctx.lineTo(barX + cut, barY + barHeight); ctx.lineTo(barX, barY + barHeight / 2); ctx.closePath();
+    ctx.fillStyle = 'rgba(5,8,24,0.9)'; ctx.fill();
+    ctx.strokeStyle = secondPhase ? `rgba(255,51,85,${0.7 + dangerPulse * 0.3})` : 'rgba(0,240,255,0.78)';
+    ctx.lineWidth = 1.5; ctx.stroke();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(barX + cut + 2, barY + 3); ctx.lineTo(barX + barWidth - cut - 2, barY + 3);
+    ctx.lineTo(barX + barWidth - 4, barY + barHeight / 2); ctx.lineTo(barX + barWidth - cut - 2, barY + barHeight - 3);
+    ctx.lineTo(barX + cut + 2, barY + barHeight - 3); ctx.lineTo(barX + 4, barY + barHeight / 2); ctx.closePath();
+    ctx.clip();
+    ctx.fillStyle = 'rgba(0,240,255,0.1)';
+    ctx.fillRect(barX + 2, barY + 2, barWidth - 4, barHeight - 4);
+    ctx.fillStyle = '#ffffff';
+    ctx.globalAlpha = 0.75;
+    ctx.fillRect(barX + 2 + (barWidth - 4) * hpRatio, barY + 3, Math.max(0, (barWidth - 4) * (delayedRatio - hpRatio)), barHeight - 6);
+    ctx.globalAlpha = dangerPulse;
+    ctx.fillStyle = bossColor;
+    ctx.fillRect(barX + 2, barY + 3, (barWidth - 4) * hpRatio, barHeight - 6);
+    ctx.globalAlpha = secondPhase ? 0.23 : 0.15;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(barX + 4, barY + 3, Math.max(0, (barWidth - 8) * hpRatio), 2);
+    if (secondPhase) {
+        ctx.globalAlpha = 0.2 + Math.sin(G.time * 0.08) * 0.12;
+        ctx.fillStyle = '#ffffff';
+        const noiseX = barX + ((G.time * 0.37) % Math.max(1, barWidth - 8));
+        ctx.fillRect(noiseX, barY + 4, 5, barHeight - 8);
+        ctx.fillRect(barX + barWidth * 0.68, barY + 7, 9, 2);
+    }
+    for (let i = 1; i < 32; i++) {
+        const sx = barX + barWidth * i / 32;
+        ctx.globalAlpha = secondPhase ? 0.46 : 0.36;
+        ctx.fillStyle = 'rgba(4,7,20,0.9)';
+        ctx.fillRect(sx - 1, barY + 3, 2, barHeight - 6);
+    }
+    ctx.restore();
+    renderBossPhaseUI(boss, barX, barY, barWidth, barHeight, secondPhase);
+
+    const iconX = barX + 14, iconY = barY - 12;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = bossColor; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    const points = boss.type === 'boss2' ? 6 : boss.type === 'boss3' ? 3 : 5;
+    for (let i = 0; i < points; i++) {
+        const a = i * Math.PI * 2 / points - Math.PI / 2;
+        const px = iconX + Math.cos(a) * 6, py = iconY + Math.sin(a) * 6;
+        if (!i) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#f1f8ff'; ctx.font = `bold ${compact ? 9 : 11}px Orbitron, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillText(bossName, W / 2, barY - 4, barWidth - 48);
+    if (secondPhase) {
+        const phaseLabel = boss.type === 'boss2' ? 'OVERLOAD' : boss.type === 'boss' ? 'TIME FRACTURE' : 'PHASE 02';
+        ctx.fillStyle = '#ff3355'; ctx.textAlign = 'right'; ctx.font = `bold ${compact ? 7 : 8}px Orbitron, sans-serif`;
+        ctx.fillText(phaseLabel, barX + barWidth - 12, barY - 4);
+    }
+    ctx.restore();
+}
+
+function renderBossTelegraph(e) {
+    const compact = W < 720;
+    const progress = 1 - clamp(e.boss3Timer / e.boss3TelegraphDuration, 0, 1);
+    const blink = 0.55 + Math.sin(G.time * (e.boss3SecondPhase ? 0.04 : 0.022)) * 0.45;
+    const color = e.boss3SecondPhase ? '#ff3355' : '#00f0ff';
+    const x = e.boss3TargetX, y = e.boss3TargetY;
+    const width = 224, height = 154;
+    const radius = 18 + progress * 42;
+    const alpha = (0.08 + progress * 0.2) * blink;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(255,51,85,${alpha})`;
+    ctx.fillRect(x - width / 2, y - height / 2, width, height);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(255,51,85,${0.48 + progress * 0.48})`;
+    ctx.lineWidth = compact ? 1.5 : 2;
+    ctx.setLineDash([10, 7]);
+    ctx.lineDashOffset = -G.time * 0.04;
+    ctx.strokeRect(x - width / 2, y - height / 2, width, height);
+    ctx.setLineDash([]);
+
+    const corner = 19 + progress * 7;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = compact ? 2 : 3;
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+        const cx = x + sx * width / 2, cy = y + sy * height / 2;
+        ctx.beginPath();
+        ctx.moveTo(cx - sx * corner, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy - sy * corner);
+        ctx.stroke();
+    }
+
+    ctx.fillStyle = `rgba(255,51,85,${0.1 + progress * 0.16})`;
+    ctx.beginPath();
+    const sectorAngle = e.rotation - Math.PI / 2;
+    ctx.moveTo(x, y);
+    ctx.arc(x, y, 42 + progress * 34, sectorAngle - 0.48, sectorAngle + 0.48);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = `rgba(255,51,85,${0.45 + progress * 0.45})`;
+    ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
+    for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4 + G.time * 0.001;
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * (radius - 4), y + Math.sin(a) * (radius - 4));
+        ctx.lineTo(x + Math.cos(a) * (radius + 5), y + Math.sin(a) * (radius + 5));
+        ctx.stroke();
+    }
+    const markerSize = 24 + progress * 12;
+    ctx.beginPath();
+    ctx.moveTo(x - markerSize, y); ctx.lineTo(x + markerSize, y);
+    ctx.moveTo(x, y - markerSize); ctx.lineTo(x, y + markerSize);
+    ctx.arc(x, y, 12 + progress * 8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff'; ctx.font = `bold ${compact ? 10 : 12}px Orbitron, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`LOCK ${Math.max(0, e.boss3Timer / 1000).toFixed(1)}s`, x, y - height / 2 + 20);
+
+    const edgePulse = (0.16 + progress * 0.36) * blink;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = `rgba(255,51,85,${edgePulse})`;
+    ctx.lineWidth = compact ? 5 : 9;
+    ctx.strokeRect(4, 4, W - 8, H - 8);
+    ctx.globalAlpha = edgePulse * 0.24;
+    ctx.fillStyle = '#ff3355';
+    ctx.fillRect(0, 0, W, compact ? 5 : 9);
+    ctx.fillRect(0, H - (compact ? 5 : 9), W, compact ? 5 : 9);
+    ctx.restore();
+}
+
+function renderBossSlowField(e) {
+    if (!e.slowFieldActive) return;
+    const compact = W < 720;
+    const radius = e.hp <= e.maxHp * 0.5 ? 468 : 364;
+    const pulse = 0.82 + Math.sin(G.time * 0.006) * 0.12;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = '#b347ff';
+    ctx.beginPath(); ctx.arc(e.x, e.y, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.42 * pulse;
+    ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = compact ? 1.5 : 2;
+    ctx.setLineDash([compact ? 7 : 12, compact ? 8 : 14]);
+    ctx.lineDashOffset = -G.time * 0.025;
+    ctx.beginPath(); ctx.arc(e.x, e.y, radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = '#b347ff'; ctx.lineWidth = 1;
+    for (let i = 0; i < 12; i++) {
+        const a = i * Math.PI / 6 + G.time * 0.00018;
+        ctx.beginPath();
+        ctx.moveTo(e.x + Math.cos(a) * (radius - 8), e.y + Math.sin(a) * (radius - 8));
+        ctx.lineTo(e.x + Math.cos(a) * (radius + 4), e.y + Math.sin(a) * (radius + 4));
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function renderBossPortals(e) {
+    if (!e.portals || !e.portals.length) return;
+    const compact = W < 720;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    e.portals.forEach(portal => {
+        const pulse = 0.86 + Math.sin(G.time * 0.008 + portal.rotation) * 0.14;
+        const radius = compact ? 13 : 18;
+        ctx.globalAlpha = 0.78;
+        ctx.strokeStyle = '#b347ff'; ctx.lineWidth = compact ? 2 : 3;
+        ctx.beginPath(); ctx.ellipse(portal.x, portal.y, radius * pulse, radius * 0.68, portal.rotation, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 0.54;
+        ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.ellipse(portal.x, portal.y, radius * 0.58, radius * 0.92, -portal.rotation, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 0.18;
+        ctx.fillStyle = '#ff2e88';
+        ctx.beginPath(); ctx.arc(portal.x, portal.y, radius * 0.55, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.82;
+        for (let i = 0; i < 4; i++) {
+            const a = portal.rotation + i * Math.PI / 2;
+            ctx.fillStyle = i % 2 ? '#00f0ff' : '#ff2e88';
+            ctx.beginPath();
+            ctx.arc(portal.x + Math.cos(a) * radius, portal.y + Math.sin(a) * radius * 0.65, compact ? 1.5 : 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+    ctx.restore();
+}
+
+function renderBossMissiles(e) {
+    if (!e.missileTargets || !e.missileTargets.length || e.missileCountdown <= 0) return;
+    const compact = W < 720;
+    const pulse = 0.72 + Math.sin(G.time * 0.018) * 0.22;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    e.missileTargets.forEach((target, index) => {
+        const radius = 24 + pulse * 8;
+        ctx.globalAlpha = 0.12 + (1 - e.missileCountdown / 2000) * 0.12;
+        ctx.fillStyle = '#ff3355';
+        ctx.beginPath(); ctx.arc(target.x, target.y, 64, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.42 + pulse * 0.38;
+        ctx.strokeStyle = index % 2 ? '#ffb000' : '#ff3355';
+        ctx.lineWidth = compact ? 1.5 : 2;
+        ctx.setLineDash([6, 5]); ctx.lineDashOffset = G.time * 0.03;
+        ctx.beginPath(); ctx.arc(target.x, target.y, radius, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(target.x - 8, target.y); ctx.lineTo(target.x + 8, target.y);
+        ctx.moveTo(target.x, target.y - 8); ctx.lineTo(target.x, target.y + 8);
+        ctx.stroke();
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = '#ffffff'; ctx.font = `bold ${compact ? 8 : 9}px Orbitron, sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(`${Math.max(0, e.missileCountdown / 1000).toFixed(1)}s`, target.x, target.y - radius - 9);
+    });
+    ctx.restore();
+}
+
+function renderBossTurrets(e) {
+    if (!e.turrets || !e.turrets.length) return;
+    const compact = W < 720;
+    ctx.save();
+    e.turrets.forEach(turret => {
+        const r = compact ? 12 : 15;
+        const target = players.find(player => player.alive);
+        ctx.save();
+        ctx.translate(turret.x, turret.y);
+        ctx.rotate(target ? angleTo(turret, target) : turret.rotation);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = '#ffb000'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(-r - 3, 0); ctx.lineTo(r + 3, 0); ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = '#151225'; ctx.strokeStyle = '#b347ff'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {
+            const a = i * Math.PI / 4;
+            const rr = i % 2 ? r * 0.82 : r;
+            if (!i) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+            else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+        }
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#261d3d'; ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(0, 0, r * 0.48, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#ffb000'; ctx.fillRect(0, -2, r + 8, 4);
+        ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(r + 8, 0, 2.3, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+
+        const barWidth = compact ? 28 : 38, barHeight = 4;
+        const ratio = clamp(turret.hp / turret.maxHp, 0, 1);
+        ctx.fillStyle = 'rgba(5,6,20,0.82)';
+        ctx.fillRect(turret.x - barWidth / 2, turret.y - r - 10, barWidth, barHeight);
+        ctx.fillStyle = ratio < 0.3 ? '#ff3355' : '#ffb000';
+        ctx.fillRect(turret.x - barWidth / 2, turret.y - r - 10, barWidth * ratio, barHeight);
+        ctx.strokeStyle = 'rgba(0,240,255,0.65)'; ctx.lineWidth = 0.8;
+        ctx.strokeRect(turret.x - barWidth / 2, turret.y - r - 10, barWidth, barHeight);
+    });
+    ctx.restore();
+}
+
+function renderBossLasers(e) {
+    if (e.laserActive <= 0) return;
+    const compact = W < 720;
+    const alpha = 0.48 + clamp(e.laserActive / 3000, 0, 1) * 0.34;
+    const reach = Math.hypot(W, H);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 4; i++) {
+        const angle = e.laserAngle + i * Math.PI / 2;
+        const x2 = e.x + Math.cos(angle) * reach, y2 = e.y + Math.sin(angle) * reach;
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = '#b347ff'; ctx.lineWidth = compact ? 8 : 12;
+        ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(x2, y2); ctx.stroke();
+        ctx.globalAlpha = 0.92;
+        ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = compact ? 3 : 4;
+        ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(x2, y2); ctx.stroke();
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = compact ? 1 : 1.5;
+        ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function renderBossShield(e) {
+    if (e.shieldHp <= 0) return;
+    const compact = W < 720;
+    const radius = e.radius + (compact ? 13 : 19);
+    const ratio = clamp(e.shieldHp / e.shieldMaxHp, 0, 1);
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(0,240,255,0.08)';
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3 + G.time * 0.00025;
+        const x = Math.cos(a) * radius, y = Math.sin(a) * radius;
+        if (!i) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,240,255,0.7)'; ctx.lineWidth = compact ? 1.5 : 2;
+    ctx.stroke();
+    ctx.strokeStyle = '#ffb000'; ctx.lineWidth = compact ? 2.5 : 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius + 5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1;
+    for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3 + G.time * 0.00025;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * (radius - 2), Math.sin(a) * (radius - 2));
+        ctx.lineTo(Math.cos(a) * (radius + 4), Math.sin(a) * (radius + 4));
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function renderSniperTelegraph(e, progress) {
+    const angle = e.sniperAimAngle;
+    const dx = Math.cos(angle), dy = Math.sin(angle);
+    const edgeX = dx > 0 ? (W - e.x) / dx : dx < 0 ? -e.x / dx : Infinity;
+    const edgeY = dy > 0 ? (H - e.y) / dy : dy < 0 ? -e.y / dy : Infinity;
+    const length = Math.max(0, Math.min(edgeX, edgeY));
+    const endX = e.x + dx * length, endY = e.y + dy * length;
+    const compact = W < 720;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.35 + progress * 0.5;
+    ctx.strokeStyle = '#ff3355'; ctx.lineWidth = compact ? 1 : 1.5;
+    ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(endX, endY); ctx.stroke();
+    ctx.globalAlpha = 0.68 + progress * 0.3;
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = compact ? 0.6 : 0.85;
+    ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(endX, endY); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#ff3355';
+    if (!compact) { ctx.shadowColor = '#ff3355'; ctx.shadowBlur = 8; }
+    ctx.beginPath(); ctx.arc(endX, endY, compact ? 2.5 : 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(endX, endY, 6 + progress * 4, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+}
+
+function renderBossChargeTelegraph(e) {
+    if (!e.fireRate || !Number.isFinite(e.fireTimer)) return;
+    const charge = clamp(1 - e.fireTimer / e.fireRate, 0, 1);
+    if (charge < 0.76) return;
+    const target = players.find(p => p.alive);
+    if (!target) return;
+    const progress = clamp((charge - 0.76) / 0.24, 0, 1);
+    const angle = angleTo(e, target);
+    const reach = 150 + progress * 140;
+    const spread = (e.type === 'boss2' ? 0.58 : 0.48) * (0.72 + progress * 0.28);
+    const color = e.type === 'boss2' ? '#b347ff' : '#ff2e88';
+    const compact = W < 720;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.12 + progress * 0.14;
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.moveTo(e.x, e.y);
+    ctx.arc(e.x, e.y, reach, angle - spread, angle + spread); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 0.28 + progress * 0.42;
+    ctx.strokeStyle = color; ctx.lineWidth = compact ? 1 : 1.5;
+    ctx.beginPath();
+    ctx.moveTo(e.x, e.y);
+    ctx.lineTo(e.x + Math.cos(angle - spread) * reach, e.y + Math.sin(angle - spread) * reach);
+    ctx.moveTo(e.x, e.y);
+    ctx.lineTo(e.x + Math.cos(angle + spread) * reach, e.y + Math.sin(angle + spread) * reach);
+    ctx.arc(e.x, e.y, reach * (0.82 + progress * 0.18), angle - spread, angle + spread);
+    ctx.stroke();
+
+    ctx.globalAlpha = 0.3 + progress * 0.35;
+    ctx.strokeStyle = e.type === 'boss2' ? '#ffb000' : '#00f0ff';
+    ctx.beginPath(); ctx.arc(target.x, target.y, 18 + progress * 16, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(target.x - 8, target.y); ctx.lineTo(target.x + 8, target.y);
+    ctx.moveTo(target.x, target.y - 8); ctx.lineTo(target.x, target.y + 8);
+    ctx.stroke();
+
+    if (progress > 0.78) {
+        const pulse = 0.12 + (0.5 + Math.sin(G.time * 0.03) * 0.5) * (progress - 0.78) * 0.9;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = pulse;
+        ctx.strokeStyle = '#ff3355'; ctx.lineWidth = compact ? 4 : 7;
+        ctx.strokeRect(4, 4, W - 8, H - 8);
+    }
+    ctx.restore();
+}
+
 function renderEnemies() {
     enemies.forEach(e => {
+        if (G.mode === 'single' && e.behavior === 'boss') {
+            renderBossSlowField(e);
+            renderBossPortals(e);
+        } else if (G.mode === 'single' && e.behavior === 'boss2') {
+            renderBossMissiles(e);
+            renderBossTurrets(e);
+            renderBossLasers(e);
+            renderBossShield(e);
+        }
+        if (e.type === 'boss' || e.type === 'boss2') renderBossChargeTelegraph(e);
         if (e.behavior === 'sniper' && e.sniperPhase === 'aiming') {
             const progress = 1 - clamp(e.sniperTimer / e.sniperAimDuration, 0, 1);
-            ctx.save();
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.globalAlpha = 1;
-            ctx.strokeStyle = '#ff1f3d';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(e.x, e.y);
-            ctx.lineTo(e.x + Math.cos(e.sniperAimAngle) * Math.hypot(W, H), e.y + Math.sin(e.sniperAimAngle) * Math.hypot(W, H));
-            ctx.stroke();
-            ctx.restore();
+            renderSniperTelegraph(e, progress);
         }
         if (e.type === 'boss3' && e.boss3Action === 'telegraph') {
-            const progress = 1 - clamp(e.boss3Timer / e.boss3TelegraphDuration, 0, 1);
-            const blink = 0.55 + Math.sin(G.time * (e.boss3SecondPhase ? 0.04 : 0.022)) * 0.45;
-            const alpha = (0.08 + progress * 0.2) * blink;
-            const warningWidth = 224, warningHeight = 154;
-            ctx.fillStyle = `rgba(255, 51, 85, ${alpha})`;
-            ctx.fillRect(e.boss3TargetX - warningWidth / 2, e.boss3TargetY - warningHeight / 2, warningWidth, warningHeight);
-            ctx.strokeStyle = `rgba(255, 51, 85, ${0.55 + progress * 0.4})`;
-            ctx.lineWidth = 3; ctx.setLineDash([14, 8]);
-            ctx.strokeRect(e.boss3TargetX - warningWidth / 2, e.boss3TargetY - warningHeight / 2, warningWidth, warningHeight);
-            ctx.setLineDash([]);
-            const markerSize = 24 + progress * 12;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(e.boss3TargetX - markerSize, e.boss3TargetY); ctx.lineTo(e.boss3TargetX + markerSize, e.boss3TargetY);
-            ctx.moveTo(e.boss3TargetX, e.boss3TargetY - markerSize); ctx.lineTo(e.boss3TargetX, e.boss3TargetY + markerSize);
-            ctx.arc(e.boss3TargetX, e.boss3TargetY, 12 + progress * 8, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.fillStyle = '#ffffff'; ctx.font = 'bold 12px Orbitron'; ctx.textAlign = 'center';
-            ctx.fillText(`LOCK ${Math.max(0, e.boss3Timer / 1000).toFixed(1)}s`, e.boss3TargetX, e.boss3TargetY - warningHeight / 2 + 20);
+            renderBossTelegraph(e);
         }
         if (e.type === 'boss3' && e.boss3TeleportFlash > 0) {
             ctx.strokeStyle = `rgba(255, 46, 85, ${e.boss3TeleportFlash / 360})`;
@@ -2737,6 +3754,14 @@ function renderEnemies() {
         }
         if (e.type === 'boss3') {
             renderBoss3Body(e);
+            return;
+        }
+        if (e.type === 'boss') {
+            renderChronovoreBody(e);
+            return;
+        }
+        if (e.type === 'boss2') {
+            renderMecharchBody(e);
             return;
         }
         ctx.save(); ctx.translate(e.x, e.y);
@@ -2774,26 +3799,7 @@ function renderEnemies() {
         if (e.hp < e.maxHp && e.type !== 'boss' && e.type !== 'boss2' && e.type !== 'boss3') { const bw = e.radius * 2, bh = 3; ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(e.x - bw / 2, e.y - e.radius - 10, bw, bh); ctx.fillStyle = e.color; ctx.fillRect(e.x - bw / 2, e.y - e.radius - 10, bw * (e.hp / e.maxHp), bh); }
     });
     const boss = enemies.find(e => e.type === 'boss' || e.type === 'boss2' || e.type === 'boss3');
-    if (boss) {
-        const barX = W / 2 - 220, barY = 28, barWidth = 440, barHeight = 18;
-        const phaseTwo = boss.type === 'boss3' && boss.boss3SecondPhase;
-        ctx.fillStyle = 'rgba(5, 6, 20, 0.88)'; ctx.fillRect(barX, barY, barWidth, barHeight);
-        const g = ctx.createLinearGradient(barX, 0, barX + barWidth, 0);
-        g.addColorStop(0, phaseTwo ? '#ff3355' : boss.color);
-        g.addColorStop(0.55, '#b347ff');
-        g.addColorStop(1, phaseTwo ? '#ff3355' : boss.color);
-        ctx.save();
-        ctx.shadowColor = phaseTwo ? '#ff3355' : boss.color;
-        ctx.shadowBlur = phaseTwo ? 18 : 10;
-        ctx.fillStyle = g;
-        ctx.fillRect(barX + 2, barY + 2, (barWidth - 4) * clamp(boss.hp / boss.maxHp, 0, 1), barHeight - 4);
-        ctx.strokeStyle = phaseTwo ? '#ff647a' : '#00f0ff';
-        ctx.lineWidth = 2; ctx.strokeRect(barX, barY, barWidth, barHeight);
-        ctx.restore();
-        ctx.fillStyle = '#ffffff'; ctx.font = 'bold 12px Orbitron'; ctx.textAlign = 'center';
-        const bossName = boss.type === 'boss3' ? '深空行者 · ABYSSAL WRAITH' : boss.type === 'boss2' ? '机械先驱 · MECHARCH' : '时空吞噬者 · CHRONOVORE';
-        ctx.fillText(bossName, W / 2, 22);
-    }
+    if (boss) renderBossHealthBar(boss);
 }
 
 function renderBullets() {
@@ -2841,34 +3847,72 @@ function renderLasers() {
 }
 
 function renderEnemyBullets() {
+    const compact = W < 720;
     enemyBullets.forEach(b => {
         ctx.save();
         if (b.isSniperBullet) {
             const angle = Math.atan2(b.vy, b.vx);
+            const flash = typeof b.life === 'number' ? clamp((2.5 - b.life) / 0.1, 0, 1) : 0;
             ctx.globalCompositeOperation = 'lighter';
             ctx.translate(b.x, b.y);
             ctx.rotate(angle);
-            ctx.shadowColor = b.color;
-            ctx.shadowBlur = 9;
-            ctx.fillStyle = 'rgba(255, 35, 55, 0.3)';
-            ctx.fillRect(-22, -2.5, 44, 5);
+            if (!compact) { ctx.shadowColor = '#ff3355'; ctx.shadowBlur = 8; }
+            ctx.globalAlpha = 0.45;
+            ctx.fillStyle = '#ff3355';
+            ctx.fillRect(-30, -3, 32, 6);
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = '#ff3355';
+            ctx.fillRect(-18, -1.8, 32, 3.6);
             ctx.fillStyle = b.color;
-            ctx.fillRect(-19, -1.2, 38, 2.4);
+            ctx.fillRect(-10, -1.1, 20, 2.2);
             ctx.fillStyle = '#fff0f2';
-            ctx.fillRect(-15, -0.55, 30, 1.1);
+            ctx.fillRect(4, -0.8, 11, 1.6);
+            ctx.fillStyle = '#ffffff';
+            ctx.globalAlpha = flash;
+            ctx.beginPath(); ctx.arc(17, 0, 2 + flash * 3, 0, Math.PI * 2); ctx.fill();
             ctx.restore();
             return;
         }
         if (b.ringCenterX !== undefined) {
             ctx.globalCompositeOperation = 'lighter';
-            ctx.shadowColor = b.color;
-            ctx.shadowBlur = 14;
+            if (!compact) { ctx.shadowColor = '#b347ff'; ctx.shadowBlur = 8; }
+            const direction = Math.sign(b.ringSpin || 1);
+            const tailAngle = b.ringAngle - direction * 0.26;
+            ctx.globalAlpha = 0.68;
+            ctx.strokeStyle = '#b347ff'; ctx.lineWidth = compact ? 1.5 : 2;
+            ctx.beginPath();
+            ctx.arc(b.ringCenterX, b.ringCenterY, Math.max(1, b.ringRadius - 3), tailAngle, b.ringAngle);
+            ctx.stroke();
+            ctx.globalAlpha = 0.52;
+            ctx.strokeStyle = '#ffb000'; ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(b.ringCenterX, b.ringCenterY, b.ringRadius + 4, tailAngle - 0.08, tailAngle + 0.03);
+            ctx.stroke();
+        } else {
+            const speed = Math.hypot(b.vx || 0, b.vy || 0);
+            if (speed > 0) {
+                const tailLength = Math.min(24, Math.max(8, speed * 2.2));
+                const tailX = b.x - (b.vx / speed) * tailLength;
+                const tailY = b.y - (b.vy / speed) * tailLength;
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalAlpha = 0.5;
+                ctx.strokeStyle = b.color; ctx.lineWidth = Math.max(2, b.radius * 0.8); ctx.lineCap = 'round';
+                ctx.beginPath(); ctx.moveTo(tailX, tailY); ctx.lineTo(b.x, b.y); ctx.stroke();
+                ctx.globalAlpha = 0.8;
+                ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(b.x - (b.vx / speed) * 5, b.y - (b.vy / speed) * 5); ctx.lineTo(b.x, b.y); ctx.stroke();
+            }
         }
         const glow = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.radius * 3);
         glow.addColorStop(0, b.color + 'AA'); glow.addColorStop(1, b.color + '00');
         ctx.fillStyle = glow; ctx.fillRect(b.x - b.radius * 3, b.y - b.radius * 3, b.radius * 6, b.radius * 6);
         ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 0.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 0.42, 0, Math.PI * 2); ctx.fill();
+        if (b.ringCenterX !== undefined) {
+            ctx.globalAlpha = 0.65;
+            ctx.strokeStyle = '#b347ff'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 3, G.time * 0.006, G.time * 0.006 + Math.PI * 1.15); ctx.stroke();
+        }
         ctx.restore();
     });
 }
@@ -2912,7 +3956,9 @@ function renderPickups() {
 
 // ===== UI 事件绑定 =====
 document.getElementById('mode-single').onclick = () => startSingleGame();
-document.getElementById('test-wave-btn').onclick = () => startSingleGame(true);
+document.getElementById('test-boss1-btn').onclick = () => startSingleGame(10);
+document.getElementById('test-boss2-btn').onclick = () => startSingleGame(11);
+document.getElementById('test-boss3-btn').onclick = () => startSingleGame(12);
 
 document.getElementById('mode-multi').onclick = () => {
     document.getElementById('menu').classList.add('hidden');
