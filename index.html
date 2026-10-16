@@ -212,6 +212,7 @@ body { cursor: none; }
 <audio id="boss2-bgm" src="music/Juhani Junkala [Retro Game Music Pack] Level 2.wav" loop preload="auto"></audio>
 <audio id="boss3-bgm" src="music/Juhani Junkala [Retro Game Music Pack] Level 3.wav" loop preload="auto"></audio>
 <audio id="menu-bgm" src="music/Juhani Junkala [Retro Game Music Pack] Ending.wav" loop preload="auto"></audio>
+<audio id="gameover-bgm" src="music/Juhani Junkala [Retro Game Music Pack] Title Screen.wav" loop preload="auto"></audio>
 <canvas id="game"></canvas>
 <div class="vignette"></div>
 <div id="slowmo-overlay"></div>
@@ -1036,6 +1037,9 @@ const Net = {
             } else if (data.type === 'state') {
                 this.applyState(data);
             } else if (data.type === 'game_over') {
+                stopBGM();
+                stopBossBGM();
+                startGameOverBGM();
                 G.state = 'gameover';
                 document.getElementById('final-score').textContent = Math.floor(data.score);
                 document.getElementById('final-wave').textContent = data.wave;
@@ -1303,18 +1307,32 @@ const menuBgm = document.getElementById('menu-bgm');
 const bossBgm = document.getElementById('boss-bgm');
 const boss2Bgm = document.getElementById('boss2-bgm');
 const boss3Bgm = document.getElementById('boss3-bgm');
+const gameOverBgm = document.getElementById('gameover-bgm');
 let musicOn = true;
 function playMenuBGM() { if (menuBgm && musicOn) { menuBgm.currentTime = 0; menuBgm.volume = 0.45; menuBgm.play().catch(() => {}); } }
 function stopMenuBGM() { if (menuBgm) { menuBgm.pause(); } }
 // 按 Boss 类型选曲：wave10/20(第2 Boss)用 Level 2，其余用 Level 1
-function startBossBGM() {
-    const b = G.wave === 15 ? boss3Bgm : (G.wave % 10 === 0) ? boss2Bgm : bossBgm;
+function startBossBGM(bossType) {
+    if (!bossType && G.bossActive) {
+        const activeBoss = enemies.find(enemy => ['boss', 'boss2', 'boss3'].includes(enemy.type));
+        if (activeBoss) bossType = activeBoss.type;
+    }
+    const tracksByBossType = { boss: bossBgm, boss2: boss2Bgm, boss3: boss3Bgm };
+    const b = tracksByBossType[bossType] || (G.wave === 15 ? boss3Bgm : (G.wave % 10 === 0) ? boss2Bgm : bossBgm);
     if (b && musicOn) { b.currentTime = 0; b.volume = 0.5; b.play().catch(() => {}); }
     if (bossBgm && bossBgm !== b) bossBgm.pause();
     if (boss2Bgm && boss2Bgm !== b) boss2Bgm.pause();
     if (boss3Bgm && boss3Bgm !== b) boss3Bgm.pause();
 }
 function stopBossBGM() { if (bossBgm) bossBgm.pause(); if (boss2Bgm) boss2Bgm.pause(); if (boss3Bgm) boss3Bgm.pause(); }
+function startGameOverBGM() {
+    if (gameOverBgm && musicOn) {
+        gameOverBgm.currentTime = 0;
+        gameOverBgm.volume = 0.5;
+        gameOverBgm.play().catch(() => {});
+    }
+}
+function stopGameOverBGM() { if (gameOverBgm) gameOverBgm.pause(); }
 // 首次用户手势自动播放主界面音乐
 let menuMusicStarted = false;
 function tryStartMenuBGM() { if (!menuMusicStarted && G.state === 'menu') { menuMusicStarted = true; playMenuBGM(); } }
@@ -1324,9 +1342,10 @@ const musicToggle = document.getElementById('music-toggle');
 function updateMusicBtn() { if (!musicToggle) return; musicToggle.textContent = musicOn ? '♫' : '×'; musicToggle.classList.toggle('muted', !musicOn); }
 function toggleMusic() {
     musicOn = !musicOn;
-    if (!musicOn) { stopBGM(); stopMenuBGM(); stopBossBGM(); }
+    if (!musicOn) { stopBGM(); stopMenuBGM(); stopBossBGM(); stopGameOverBGM(); }
     else if (G.state === 'menu') playMenuBGM();
-    else if (G.wave % 5 === 0 && G.bossActive) startBossBGM();
+    else if (G.state === 'gameover') startGameOverBGM();
+    else if (G.bossActive) startBossBGM();
     else startBGM();
     updateMusicBtn();
 }
@@ -1334,8 +1353,10 @@ if (musicToggle) musicToggle.addEventListener('click', toggleMusic);
 updateMusicBtn();
 
 function startSingleGame(testWave = 0) {
+    stopGameOverBGM();
     const testBossWave = [10, 11, 12].includes(testWave) ? testWave : 0;
     const isTestWave = testBossWave !== 0;
+    let testBossType = null;
     G.mode = 'single'; G.state = 'playing';
     G.score = 0; G.wave = isTestWave ? testBossWave : 1; G.waveTimer = 0; G.spawnTimer = 0;
     G.snipersSpawnedThisWave = 0;
@@ -1356,11 +1377,11 @@ function startSingleGame(testWave = 0) {
     enemies.length = 0; bullets.length = 0; enemyBullets.length = 0; lasers.length = 0;
     particles.length = 0; damageNumbers.length = 0; pickups.length = 0;
     if (isTestWave) {
-        const bossType = { 10: 'boss', 11: 'boss2', 12: 'boss3' }[testBossWave];
+        testBossType = { 10: 'boss', 11: 'boss2', 12: 'boss3' }[testBossWave];
         G.enemiesPerWave = 1;
         G.enemiesSpawnedThisWave = 1;
         G.bossActive = true;
-        spawnEnemy(bossType, CX, testBossWave === 12 ? H * 0.25 : H * 0.22);
+        spawnEnemy(testBossType, CX, testBossWave === 12 ? H * 0.25 : H * 0.22);
     }
     document.getElementById('menu').classList.add('hidden');
     document.getElementById('multi-menu').classList.add('hidden');
@@ -1370,10 +1391,12 @@ function startSingleGame(testWave = 0) {
     updateMultiHUD();
     announceWave();
     stopMenuBGM();
-    startBGM();
+    if (testBossType) startBossBGM(testBossType);
+    else startBGM();
 }
 
 function startMultiGame() {
+    stopGameOverBGM();
     if (Net.isHost) {
         G.mode = 'multi-host'; G.state = 'playing';
         G.score = 0; G.wave = 1; G.waveTimer = 0; G.spawnTimer = 0;
@@ -2524,7 +2547,7 @@ function updateWave(dt) {
     if (G.wave % 5 === 0 && !G.bossActive && G.enemiesSpawnedThisWave === 0) {
         const bossType = G.wave === 15 ? 'boss3' : (Math.floor(G.wave / 5) % 2 === 1) ? 'boss' : 'boss2';
         spawnEnemy(bossType, CX, bossType === 'boss3' ? H * 0.25 : -100); G.bossActive = true; G.enemiesSpawnedThisWave = 1;
-        stopBGM(); startBossBGM();
+        stopBGM(); startBossBGM(bossType);
     } else if (G.wave % 5 !== 0) {
         if (G.spawnTimer <= 0 && G.enemiesSpawnedThisWave < G.enemiesPerWave) {
             spawnRandomEnemy(); G.enemiesSpawnedThisWave++;
@@ -2612,6 +2635,7 @@ function showUpgradeChoices(pool, isClient, p) {
 function gameOver() {
     stopBGM();
     stopBossBGM();
+    startGameOverBGM();
     G.state = 'gameover';
     if (G.score > G.highScore) { G.highScore = Math.floor(G.score); localStorage.setItem('chronoloom_hs', G.highScore); }
     const isVictory = G.wave > 10;
@@ -3232,6 +3256,25 @@ function renderBoss3Body(e) {
     ctx.lineDashOffset = -rotation * 12;
     ctx.beginPath(); ctx.arc(0, 0, 80, -rotation * 0.6, Math.PI * 2 - rotation * 0.6); ctx.stroke();
     ctx.setLineDash([]);
+    ctx.save();
+    ctx.rotate(rotation * 0.12);
+    for (let i = 0; i < 6; i++) {
+        ctx.save();
+        ctx.rotate(i * Math.PI / 3);
+        ctx.fillStyle = secondPhase ? '#351827' : '#211a38';
+        ctx.strokeStyle = secondPhase ? `rgba(255, 51, 85, ${alarm})` : 'rgba(179, 71, 255, 0.88)';
+        ctx.lineWidth = compact ? 1.5 : 2;
+        ctx.beginPath();
+        ctx.moveTo(-17, -24); ctx.lineTo(-19, -47); ctx.lineTo(-32, -72);
+        ctx.lineTo(-15, -65); ctx.lineTo(-5, -94); ctx.lineTo(8, -68);
+        ctx.lineTo(24, -78); ctx.lineTo(17, -49); ctx.lineTo(20, -24);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = secondPhase ? 'rgba(255, 51, 85, 0.75)' : 'rgba(0, 240, 255, 0.68)';
+        ctx.lineWidth = compact ? 1 : 1.5;
+        ctx.beginPath(); ctx.moveTo(0, -34); ctx.lineTo(1, -73); ctx.stroke();
+        ctx.restore();
+    }
+    ctx.restore();
     for (let i = 0; i < 6; i++) {
         const a = rotation + i * Math.PI / 3;
         const x = Math.cos(a), y = Math.sin(a);
@@ -3267,6 +3310,27 @@ function renderBoss3Body(e) {
     core.addColorStop(1, 'rgba(179, 71, 255, 0)');
     ctx.fillStyle = core;
     ctx.beginPath(); ctx.arc(0, 0, secondPhase ? 36 : 30, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = secondPhase ? '#ff3355' : '#ff2e88';
+    ctx.shadowColor = ctx.fillStyle;
+    ctx.shadowBlur = compact ? 8 : 16;
+    ctx.beginPath();
+    ctx.moveTo(-28, 0); ctx.quadraticCurveTo(0, -20, 28, 0);
+    ctx.quadraticCurveTo(0, 20, -28, 0); ctx.closePath(); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#f6f5ff';
+    ctx.beginPath();
+    ctx.moveTo(-23, 0); ctx.quadraticCurveTo(0, -14, 23, 0);
+    ctx.quadraticCurveTo(0, 14, -23, 0); ctx.closePath(); ctx.fill();
+    const iris = ctx.createRadialGradient(0, 0, 1, 0, 0, 11);
+    iris.addColorStop(0, secondPhase ? '#fff2f2' : '#eaffff');
+    iris.addColorStop(0.35, secondPhase ? '#ff3355' : '#00ffcc');
+    iris.addColorStop(1, secondPhase ? '#8b1434' : '#087e91');
+    ctx.fillStyle = iris;
+    ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#080816';
+    ctx.beginPath(); ctx.ellipse(0, 0, 3.5, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(-3, -4, 2.2, 0, Math.PI * 2); ctx.fill();
     if (secondPhase) {
         ctx.save();
         ctx.beginPath();
